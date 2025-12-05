@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimplyDoors 4x6 Label Maker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script src="https://unpkg.com/pdfjs-dist@2.16.105/build/pdf.min.js"></script>
+    <script>
+        const pdfjsLib = window['pdfjs-dist/build/pdf'];
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@2.16.105/build/pdf.worker.min.js';
+    </script>
+
+    <style>
+        /* --- PRINT SETTINGS FOR 4x6 --- */
+        @media print {
+            /* 1. Set the physical paper size */
+            @page {
+                size: 4in 6in;
+                margin: 0;
+            }
+
+            /* 2. Hide web interface */
+            body * {
+                visibility: hidden;
+            }
+            .no-print {
+                display: none !important;
+            }
+
+            /* 3. Show print area */
+            #print-area, #print-area * {
+                visibility: visible;
+            }
+            #print-area {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                margin: 0;
+                padding: 0;
+            }
+
+            /* 4. The Label Card Definition */
+            .label-card {
+                width: 4in;
+                height: 6in;
+                /* Force page break after every label */
+                break-after: page;
+                page-break-after: always;
+                page-break-inside: avoid;
+                
+                /* Layout */
+                display: flex;
+                flex-direction: column;
+                padding: 0.15in; /* Safe margin from edge */
+                box-sizing: border-box;
+                border: 1px solid #ddd; /* Light border guide (optional) */
+                overflow: hidden;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-8">
+
+    <div class="max-w-7xl mx-auto no-print">
+        
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8 border-l-4 border-orange-500">
+            <div class="flex justify-between items-start">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800 mb-2">SimplyDoors Label Maker (4" x 6")</h1>
+                    <p class="text-gray-600 mb-4">
+                        Upload Quote PDF. Prints perfectly on 4x6 thermal labels (Zebra/Dymo/Rollo).
+                    </p>
+                </div>
+                <button id="printBtn" onclick="triggerPrint()" class="hidden bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-6 rounded-lg shadow-lg flex items-center gap-2 transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                    </svg>
+                    Print Labels
+                </button>
+            </div>
+
+            <input type="file" id="fileInput" accept=".pdf" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-700 hover:file:bg-orange-100 cursor-pointer">
+        </div>
+
+        <div id="loading" class="hidden text-center py-10">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600 mb-2"></div>
+            <p class="text-xl text-orange-600 font-bold">Processing PDF...</p>
+        </div>
+
+        <div id="results" class="space-y-8"></div>
+    </div>
+
+    <div id="print-area"></div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const resultsDiv = document.getElementById('results');
+        const printArea = document.getElementById('print-area');
+        const loadingDiv = document.getElementById('loading');
+        const printBtn = document.getElementById('printBtn');
+
+        let extractedLabels = [];
+
+        fileInput.addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            resultsDiv.innerHTML = '';
+            printArea.innerHTML = '';
+            extractedLabels = [];
+            printBtn.classList.add('hidden');
+            loadingDiv.classList.remove('hidden');
+
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
+                const pdf = await loadingTask.promise;
+
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    await processPage(pdf, i);
+                }
+
+                generatePrintLayout();
+                printBtn.classList.remove('hidden');
+
+            } catch (err) {
+                console.error(err);
+                alert("Error: " + err.message);
+            } finally {
+                loadingDiv.classList.add('hidden');
+            }
+        });
+
+        async function processPage(pdf, pageNum) {
+            const page = await pdf.getPage(pageNum);
+            const scale = 3.0; 
+            const viewport = page.getViewport({ scale: scale });
+            const textContent = await page.getTextContent();
+            let items = textContent.items;
+
+            items.sort((a, b) => {
+                const yDiff = b.transform[5] - a.transform[5];
+                if (Math.abs(yDiff) > 5) return yDiff; 
+                return a.transform[4] - b.transform[4];
+            });
+
+            // --- Anchors ---
+            let name = "Unknown Item";
+            let pdfY_Top = -1, pdfX_Left = -1, pdfY_Bot = -1, pdfX_Qty = -1, pdfY_Total = -1;
+            let commentIndex = -1;
+
+            for (let i = 0; i < items.length; i++) {
+                const str = items[i].str.trim();
+                const y = items[i].transform[5];
+                const x = items[i].transform[4];
+
+                if (str.includes("Comment:")) commentIndex = i;
+                if (str.includes("Sales Person")) {
+                    if (y > pdfY_Top) pdfY_Top = y;
+                    if (pdfX_Left === -1) pdfX_Left = x;
+                }
+                if (str.includes("Item Description")) pdfY_Bot = y;
+                if (str === "Qty") pdfX_Qty = x;
+                if (str.includes("Item Total") || str.includes("Order Sub Total")) {
+                    if (pdfY_Total === -1) pdfY_Total = y;
+                }
+            }
+
+            if (pdfY_Top === -1) pdfY_Top = 700;
+            if (pdfY_Bot === -1) pdfY_Bot = 150;
+            if (pdfX_Left === -1) pdfX_Left = (viewport.width / scale) * 0.35; 
+            if (pdfX_Qty === -1) pdfX_Qty = 550; 
+            if (pdfY_Total === -1) pdfY_Total = 50;
+
+            // --- Extract Name ---
+            if (commentIndex !== -1) {
+                const commentItem = items[commentIndex];
+                const parts = commentItem.str.split("Comment:");
+                if (parts.length > 1 && parts[1].trim().length > 0) {
+                    name = parts[1].trim();
+                } else if (commentIndex + 1 < items.length) {
+                    name = items[commentIndex + 1].str.trim();
+                }
+            }
+
+            // --- Extract Desc ---
+            let descLines = [];
+            const descItems = items.filter(item => {
+                const y = item.transform[5];
+                const x = item.transform[4];
+                return (y < pdfY_Bot - 10 && y > pdfY_Total + 10 && x < pdfX_Qty - 20); 
+            });
+
+            let currentLineY = -1;
+            let currentLineText = [];
+            descItems.forEach(item => {
+                const str = item.str.trim();
+                if (!str) return;
+                const y = item.transform[5];
+                if (Math.abs(y - currentLineY) < 6) {
+                    currentLineText.push(str);
+                } else {
+                    if (currentLineText.length > 0) descLines.push(currentLineText.join(" "));
+                    currentLineY = y;
+                    currentLineText = [str];
+                }
+            });
+            if (currentLineText.length > 0) descLines.push(currentLineText.join(" "));
+            let descText = descLines.join("\n");
+            
+            if (name === "Unknown Item" && descText === "") return;
+
+            // --- Crop Image ---
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+            const topPt = viewport.convertToViewportPoint(0, pdfY_Top);
+            const cropY = topPt[1] + 30; 
+            const botPt = viewport.convertToViewportPoint(0, pdfY_Bot);
+            const cropBottom = botPt[1] - 35; 
+            const cropHeight = cropBottom - cropY;
+            const leftPt = viewport.convertToViewportPoint(pdfX_Left, 0);
+            const cropX = leftPt[0] - 5; 
+            const cropWidth = viewport.width - cropX - 20;
+
+            if (cropHeight <= 0 || cropWidth <= 0) return;
+
+            const cropCanvas = document.createElement('canvas');
+            cropCanvas.width = cropWidth;
+            cropCanvas.height = cropHeight;
+            const cropCtx = cropCanvas.getContext('2d');
+            cropCtx.fillStyle = '#ffffff';
+            cropCtx.fillRect(0, 0, cropWidth, cropHeight);
+            cropCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+            const imgDataUrl = cropCanvas.toDataURL('image/jpeg', 0.9);
+
+            // --- Store & Render ---
+            extractedLabels.push({ name: name, img: imgDataUrl, desc: descText });
+
+            const card = `
+            <div class="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200 flex flex-col">
+                <div class="bg-gray-50 border-b border-gray-200 p-4 flex justify-between items-center">
+                    <h2 class="text-xl font-bold text-gray-900">${name}</h2>
+                </div>
+                <div class="flex flex-col md:flex-row p-4 gap-4">
+                    <div class="w-full md:w-1/2 flex justify-center border border-dashed border-gray-300 rounded p-2">
+                        <img src="${imgDataUrl}" class="max-h-[300px] object-contain">
+                    </div>
+                    <textarea readonly class="w-full md:w-1/2 h-[200px] bg-gray-50 border border-gray-300 rounded p-2 text-xs font-mono">${descText}</textarea>
+                </div>
+            </div>`;
+            resultsDiv.insertAdjacentHTML('beforeend', card);
+        }
+
+        function generatePrintLayout() {
+            printArea.innerHTML = '';
+            extractedLabels.forEach(item => {
+                // Layout optimized for 4x6 inch paper
+                const labelHTML = `
+                <div class="label-card">
+                    <div style="border-bottom: 3px solid #000; padding-bottom: 5px; margin-bottom: 10px;">
+                        <h1 style="font-size: 20px; font-weight: 800; margin:0; line-height: 1.1;">${item.name}</h1>
+                        <div style="font-size: 10px; text-transform:uppercase; font-weight:bold; color:#555; margin-top:2px;">SimplyDoors - Custom Order</div>
+                    </div>
+                    
+                    <div style="display: flex; flex-direction: row; height: 100%; gap: 10px; overflow: hidden;">
+                        
+                        <div style="width: 55%; display: flex; flex-direction: column; justify-content: flex-start;">
+                            <img src="${item.img}" style="width: 100%; object-fit: contain; border: 1px solid #000;">
+                        </div>
+
+                        <div style="width: 45%; font-family: 'Courier New', monospace; font-size: 9px; font-weight: 600; white-space: pre-wrap; word-break: break-all; overflow: hidden; line-height: 1.2;">
+                            ${item.desc}
+                        </div>
+                    </div>
+                    
+                    <div style="border-top: 1px solid #000; margin-top: auto; padding-top: 5px; text-align: center; font-size: 9px;">
+                        Printed: ${new Date().toLocaleDateString()}
+                    </div>
+                </div>
+                `;
+                printArea.insertAdjacentHTML('beforeend', labelHTML);
+            });
+        }
+
+        function triggerPrint() {
+            window.print();
+        }
+    </script>
+</body>
+</html>
